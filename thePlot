@@ -1,0 +1,31 @@
+using JLD2
+using Statistics
+using Plots
+
+
+#change belief to be discrete updater
+# meanRewards = zeros(3)
+
+# #savedRewards = Vector{Float64}(undef,2)
+# for i in 1:3
+#     savedRewards = JLD2.load("rewards$(i).jld2")["rewards"]
+#     meanRewards[i] = Statistics.mean(savedRewards)
+# end
+
+# println(relativeCosts)
+
+
+# plot(relativeCosts, meanRewards)
+
+# println(meanRewards)
+
+n = 10
+
+meanRewards = zeros(n)
+relativeCosts = zeros(n)
+for i in 1:n
+    savedRewards = JLD2.load("rewards$(i).jld2")["rewards"]
+    meanRewards[i] = Statistics.mean(savedRewards)
+    relativeCosts[i] = i
+end
+plot(relativeCosts, meanRewards)
