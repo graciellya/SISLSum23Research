@@ -1,0 +1,239 @@
+using POMDPs
+using POMDPTools
+using Random
+using LinearAlgebra
+using QuickPOMDPs
+using SARSOP
+using Distributions
+using JLD2
+using Statistics
+
+# S, A, O, T, Obs_fcn, γ, R
+# Define State Space
+states = [(d, v) for d in 0:0.1:1.0 for v in [0, 1]]
+
+#terminal state space
+const TERMINAL_TUPLE::Tuple{Float64,Int} = (0.0, -1)
+
+push!(states, TERMINAL_TUPLE)
+
+
+# Define Action Space
+
+ACTIONS_DICT_REV = Dict(
+    :querywp1 => 1,
+    :querywp2 => 2,
+    :submit_true => 3,
+    :submit_false => 4
+)
+
+ACTIONS_DICT = Dict(
+    1 => :querywp1,
+    2 => :querywp2,
+    3 => :submit_true,
+    4 => :submit_false
+)
+actions = collect(1:length(ACTIONS_DICT))
+
+# Define Observation Space
+observations = [0,1]
+
+# Define Transitions Function
+function transition(state::Tuple{Float64, Int}, action::Int)
+   if action == ACTIONS_DICT_REV[:submit_true] || action == ACTIONS_DICT_REV[:submit_false]
+        return SparseCat([TERMINAL_TUPLE],[1.0])
+    end
+    return SparseCat([state], [1.0])
+end
+
+# Define Reward Function
+# code cost for each worker pool
+# if worker pool (19.6)
+# minus #
+# if master pool (25)
+# minus other #
+# if transition is false (0)
+# minus penalty
+# if transition is true (1)
+# nothing
+
+#= 
+function reward(state, action; relative_cost = 1.0)
+    if isterminal(state)
+        return 0.0
+    end
+    if action == ACTIONS_DICT_REV[:querywp1]
+        return -1.0
+    elseif action == ACTIONS_DICT_REV[:querywp2]
+        return -1.0 * relative_cost
+    end
+
+    true_answer_is_true = state[2] == 1
+    if true_answer_is_true && action == ACTIONS_DICT_REV[:submit_false]
+        return -100
+    end
+    if !true_answer_is_true && action == ACTIONS_DICT_REV[:submit_true]
+        return -100
+    end
+    return 0.0
+end
+
+ =#
+# Define Observation Function
+
+# number for guessed accuracy for worker pool
+# number for guessed accuract for master pool
+# use formula 
+# true/false bas
+
+# function observation(s::Tuple{Float64,Int}, a::Int, sp::Tuple{Float64, Int})
+#     return observation(a::Int, sp::Tuple{Float64,Int},)
+# end
+
+function observation(a::Int, s::Tuple{Float64,Int})
+    gamma_n = 1.0
+    gamma_e = 0.25
+    gamma = 0
+    difficulty = s[1]
+    true_answer = s[2]
+    other_answer = true_answer == 1 ? 0 : 1
+
+    if isterminal(s)
+        return SparseCat([0,1],[0.5,0.5])
+    end
+
+    # If we submit, we get a full observation of the true answer
+    if a == ACTIONS_DICT_REV[:submit_true] || a == ACTIONS_DICT_REV[:submit_false]
+        return SparseCat([true_answer], [1.0])
+    end
+    
+    if a == ACTIONS_DICT_REV[:querywp1]
+        gamma = gamma_n
+    elseif a == ACTIONS_DICT_REV[:querywp2]
+        gamma = gamma_e
+    else 
+        error("Invalid input for the action $a")
+    end
+
+
+    probability_correct = 1/2 * (1 + (1 - difficulty)^gamma)
+    probability_wrong = 1 - probability_correct
+    return SparseCat([true_answer, other_answer], [probability_correct, probability_wrong])
+
+end
+
+function newObservation(a::Int, s::Tuple{Float64,Int}, gamma_n, gamma_e)
+    gamma = 0
+    difficulty = s[1]
+    true_answer = s[2]
+    other_answer = true_answer == 1 ? 0 : 1
+
+    if isterminal(s)
+        return SparseCat([0,1],[0.5,0.5])
+    end
+
+    # If we submit, we get a full observation of the true answer
+    if a == ACTIONS_DICT_REV[:submit_true] || a == ACTIONS_DICT_REV[:submit_false]
+        return SparseCat([true_answer], [1.0])
+    end
+    
+    if a == ACTIONS_DICT_REV[:querywp1]
+        gamma = gamma_n
+    elseif a == ACTIONS_DICT_REV[:querywp2]
+        gamma = gamma_e
+    else 
+        error("Invalid input for the action $a")
+    end
+
+
+    probability_correct = 1/2 * (1 + (1 - difficulty)^gamma)
+    probability_wrong = 1 - probability_correct
+    return SparseCat([true_answer, other_answer], [probability_correct, probability_wrong])
+
+end
+
+#initial state
+initialstate_distribution = POMDPTools.Uniform(states[1:end - 1])
+function isterminal(s::Tuple{Float64,Int})
+    return s == TERMINAL_TUPLE 
+end
+
+for i in 1:10
+    function reward(state, action; relative_cost = i)
+        if isterminal(state)
+            return 0.0
+        end
+        if action == ACTIONS_DICT_REV[:querywp1]
+            return -1.0
+        elseif action == ACTIONS_DICT_REV[:querywp2]
+            return -1.0 * relative_cost
+        end
+    
+        true_answer_is_true = state[2] == 1
+        if true_answer_is_true && action == ACTIONS_DICT_REV[:submit_false]
+            return -100
+        end
+        if !true_answer_is_true && action == ACTIONS_DICT_REV[:submit_true]
+            return -100
+        end
+        return 0.0
+    end
+
+    pomdp = QuickPOMDP(
+        states = states,
+        actions = actions,
+        observations = observations,
+        transition = transition,
+        observation = observation,
+        reward = reward,
+        discount = 0.99,
+        isterminal=isterminal,
+        initialstate=initialstate_distribution
+    )
+
+    solver = SARSOPSolver(timeout=100)
+    policy = solve(solver, pomdp)
+   
+    up = POMDPs.updater(policy)
+    d_n = Normal(1.0,0.2)
+    d_e = Normal(0.25,0.05)
+    num_questions = 1000
+    rewards = zeros(num_questions)
+    for j in 1:num_questions
+        s = rand(initialstate(pomdp))
+        bel = initialize_belief(up, initialstate_distribution)
+        r_total = 0.0
+        d = 1.0
+        while !isterminal(s)
+            a = action(policy, bel)
+            s, r = @gen(:sp,:r)(pomdp, s, a)
+            gamma_n = rand(d_n)
+            gamma_e = rand(d_e)
+            o = newObservation(a, s, gamma_n, gamma_e)
+            sample_obsv = rand(o)
+            r_total += d*r
+            d *= discount(pomdp)
+            bel = update(up, bel, a, sample_obsv)
+            println("state $s")
+            println("action $(ACTIONS_DICT[a])")
+            println("observation $sample_obsv")
+            println("reward $r")  
+        end
+        rewards[j] = r_total
+    end
+    jldsave("rewards$(i).jld2"; rewards)
+end
+
+
+# JLD2.save("policy_16400_7_21.jld2", "policy", policy)
+# policy = JLD2.load("policy_16400_7_21.jld2")["policy"]
+
+#change belief to be discrete updater
+meanRewards = zeros(2)
+#savedRewards = Vector{Float64}(undef,2)
+for i in 1:10
+    savedRewards = JLD2.load("rewards$(i).jld2")["rewards"]
+    meanRewards[i] = Statistics.mean(savedRewards)
+end
+
+println(meanRewards)
